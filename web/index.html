@@ -9,7 +9,7 @@
   <header><div class="bar"><div class="brand"><i class="logo" aria-hidden="true"><b></b><b></b><b></b></i>IdtProxy <span>Mock 控制台</span></div><code id="target">正在连接 gRPC…</code></div></header>
   <main>
     <h1>资产变更配置</h1>
-    <p class="intro">指定发生变化的租户和资产，提交后即可从 gRPC 接口查询。</p>
+    <p class="intro">指定发生变化的租户和资产，或在<a href="#source-panel">回源配置与测试</a>中模拟托管状态变化。</p>
     <div class="workspace">
       <section class="panel">
         <div class="heading"><h2>配置变更</h2><button class="text-btn" id="example">填入示例</button></div>
@@ -18,14 +18,15 @@
           <div id="fields" class="fields">
             <div class="grid"><label>租户 ID<input id="tenant" placeholder="如 tenant-a" required></label>
             <label>变更类型<select id="kind"><option value="UPDATE">更新 · UPDATE</option><option value="INSERT">新增 · INSERT</option><option value="DELETE">删除 · DELETE</option><option value="TENANT">整租户 · TENANT</option></select></label></div>
-            <label id="asset-field">资产 ID<input id="asset" type="number" min="1" max="4294967295" required placeholder="如 1001"></label>
+            <label id="asset-field">资产 ID<input id="asset" type="number" min="0" max="4294967295" required placeholder="如 1001；0 表示整租户"></label>
             <label id="spread-field" hidden>分摊窗口（秒）<input id="spread" type="number" min="0" max="4294967295" placeholder="0 表示使用默认值"></label>
-            <label>变更属性<input id="attrs" placeholder="assetIp, managedLevel"><small>多个属性用逗号分隔</small></label>
+            <label>变更属性<input id="attrs" placeholder="managed_level"><small>多个属性用逗号分隔</small></label>
             <label id="ip-field">关联 IP<input id="ips" placeholder="10.0.0.11, 10.0.0.21"><small>可填写变化前后的 IP 和 EIP</small></label>
             <details id="extra"><summary>设备标识与匹配信息</summary><div class="fields inset">
               <label>MAC 地址<input id="macs" placeholder="多个值用逗号分隔"></label>
               <div class="grid"><label>设备 ID<input id="dev_id"></label><label>设备类型<input id="dev_type"></label></div>
               <label>Agent ID<input id="agent_id"></label><label>Endpoint Keys<textarea id="endpoint_keys" rows="2" placeholder="每行一个索引"></textarea></label>
+              <label>原始设备列表<textarea id="origin-devs" rows="2" placeholder='[{"dev_id":"od-7788","dev_type":"ADAPTER"}]'></textarea></label>
             </div></details>
           </div>
           <label id="batch-field" hidden>AssetChange 数组<textarea id="rows" rows="14" spellcheck="false" placeholder='[{"tenant_id":"tenant-a","kind":"UPDATE","asset_id":1001}]'></textarea><small>每个对象对应一条变更，支持全部 proto 字段。</small></label>
@@ -47,6 +48,22 @@
         <div class="footer"><span id="page-info" role="status"></span><button id="next" class="text-btn" hidden>下一页</button></div>
       </section>
     </div>
+    <section class="panel" id="source-panel">
+      <div class="heading"><h2>回源配置与测试</h2></div>
+      <p>先保存初始响应。数据湖读取并缓存后，修改响应并选择「保存并通知」，再从数据湖查询同一资产。</p>
+      <form id="source-form" class="fields">
+        <div class="grid"><label>回源接口<select id="source-method"><option>AssetQueryByIp</option><option>AuthQueryByIp</option></select></label>
+          <label>租户 ID<input id="source-tenant" required value="t1"></label></div>
+        <label>查询 IP<input id="source-ip" required value="192.168.106.112"></label>
+        <div class="grid">
+          <label>回源响应 JSON<textarea id="source-response" spellcheck="false" rows="7">{"aid":1001,"managedLevel":0}</textarea></label>
+          <label>随保存发送的变更通知<textarea id="source-event" spellcheck="false" rows="7">{"kind":"UPDATE","asset_id":1001,"attrs":["managed_level"],"macs":["00:1a:2b:3c:4d:5e"],"dev_id":"BBFA39A7","dev_type":"STA","agent_id":"agent-001","origin_devs":[{"dev_id":"od-7788","dev_type":"ADAPTER"}]}</textarea><small>租户和 IP 默认取上方输入值；省略 changed_at_ms 时使用提交时间。</small></label>
+        </div>
+        <div class="actions"><button class="secondary" value="save">仅保存回源值</button><button class="primary" value="notify">保存并通知</button><button class="text-btn" value="read">查询当前回源值</button></div>
+        <span id="source-feedback" role="status"></span>
+      </form>
+      <pre id="source-output" class="request-body" hidden aria-label="回源接口响应"></pre>
+    </section>
   </main>
 </body>
 </html>

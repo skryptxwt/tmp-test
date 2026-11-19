@@ -1,6 +1,15 @@
 # tmp-test · IdtProxy 资产变更 mock
 
-使用随附的原始 `idt_proxy.proto` 和生成的 Python 存根。实现的两个 unary RPC 为 `/IdtProxy/ListChangedTenants` 和 `/IdtProxy/ListAssetChanges`。原协议中的其他三个 RPC 返回 gRPC `UNIMPLEMENTED`。
+使用原始 `idt_proxy.proto` 提供两个通知接口 `ListChangedTenants`、`ListAssetChanges` 和两个回源接口 `AssetQueryByIp`、`AuthQueryByIp`。回源响应和变更日志保存在同一个 SQLite 数据库。
+
+## 验证托管状态从 0 刷新为 1
+
+1. 打开页面的 **回源配置与测试**。保留示例租户 `t1`、IP `192.168.106.112` 和资产响应 `{"aid":1001,"managedLevel":0}`，点击 **仅保存回源值**。这一步用于准备初始值，变更游标保持原位。
+2. 将实际数据湖测试实例的 IDT 客户端指向本 mock，启用 `assetChange.enable` 并设置 `pollSec=10`。用同一租户和 IP 的日志触发查询，确认数据湖读到 0。页面示例通知里的 MAC、设备 ID、类型、Agent ID 和原始设备应与这条日志的匹配身份一致。
+3. 把回源响应里的 `managedLevel` 改为 1，通知里的 `attrs` 填 `["managed_level"]`。点击 **保存并通知**，新响应和通知在同一事务生效。通知时间默认取当前毫秒数，测试时钟偏差时可显式填写 `changed_at_ms`。按 proto 规则，返回的 MAC 为小写。
+4. 在接口测试区核对本次游标区间的租户及变更明细。在数据湖消费到这条通知后，再发送同一条日志，确认数据湖在原 30 分钟 TTL 内读到 1。页面的 **查询当前回源值** 可独立核对回源接口。取数时间、标记保留、XFF 拆分和缓存命中情况由实际数据湖验证。
+
+回源按 **接口名、租户、查询 IP 原文** 匹配；同一资产的不同端口和域名共享配置。未配置的键返回 `NOT_FOUND`。选择 `AuthQueryByIp` 可保存相同 IP 的独立认证响应。通知中未填的租户和 IP 从回源键补齐；普通资产通知可从资产响应的 `aid` 补齐 `asset_id`。独立的通知表单也可提交显式 `asset_id=0` 的 UPDATE 以测试整租户兼容分支，明细保留原 kind。
 
 ## Docker 镜像
 

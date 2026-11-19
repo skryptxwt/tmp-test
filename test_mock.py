@@ -44,7 +44,7 @@ class ChangeRpcTest(unittest.TestCase):
         summary = self.stub.ListChangedTenants(pb.ListChangedTenantsReq())
         self.assertEqual(summary.now_cursor, "3")
         self.assertEqual([t.tenant_id for t in summary.tenants], ["tenant-a", "tenant-b"])
-        self.assertEqual(list(summary.tenants[0].attrs), ["assetIp", "managedLevel"])
+        self.assertEqual(list(summary.tenants[0].attrs), ["assetIp", "managed_level"])
         self.assertTrue(summary.tenants[1].tenant_wide)
         self.assertEqual(summary.tenants[1].spread_sec, 120)
         self.append()
@@ -92,7 +92,8 @@ class ChangeRpcTest(unittest.TestCase):
         self.assertEqual(last.changes[0].kind, pb.DELETE)
 
     def test_console_and_grpc_share_changes(self):
-        http = mock.make_console(0, self.stub, "test", lambda rows: mock.write_changes(self.db, rows))
+        http = mock.make_console(0, self.stub, "test", lambda rows: mock.write_changes(self.db, rows),
+                                 save_source=lambda data: mock.save_source(self.db, data))
         thread = threading.Thread(target=http.serve_forever, daemon=True)
         thread.start()
         self.addCleanup(http.server_close)
@@ -101,8 +102,8 @@ class ChangeRpcTest(unittest.TestCase):
         base = f"http://127.0.0.1:{http.server_port}"
         client = build_opener(ProxyHandler({}))
 
-        def post(rows):
-            return client.open(Request(base + "/api/changes", json.dumps(rows).encode(),
+        def post(rows, route="/api/changes"):
+            return client.open(Request(base + route, json.dumps(rows).encode(),
                                        {"Content-Type": "application/json"}), timeout=3)
 
         for route in ("/", "/console.js", "/console.css"):
@@ -126,6 +127,49 @@ class ChangeRpcTest(unittest.TestCase):
         with self.assertRaises(HTTPError) as bad_window:
             client.open(base + "/api/preview?method=assets&cursor=99")
         self.assertEqual(json.load(bad_window.exception)["status"], "INVALID_ARGUMENT")
+
+        key = {"tenant_id": "t1", "ip": "192.168.106.112"}
+        asset = {"method": "AssetQueryByIp", **key, "response": {"aid": 1001, "managedLevel": 0}}
+        get_asset = lambda port: self.stub.AssetQueryByIp(pb.AssetQueryByIpReq(**key, port=port), timeout=3)
+        with post(asset, "/api/source") as reply:
+            baseline = json.load(reply)
+        self.assertEqual((baseline["count"], baseline["now_cursor"]), (0, "3"))
+        self.assertEqual(get_asset(80).managedLevel, 0)
+        asset["response"]["managedLevel"] = 1
+        with self.assertRaises(HTTPError):
+            post({**asset, "change": {"asset_id": 999}}, "/api/source")
+        self.assertEqual(get_asset(80).managedLevel, 0)
+        event = {"attrs": ["managed_level"], "macs": ["00:1A:2B:3C:4D:5E"], "dev_type": "STA",
+                 "agent_id": "agent-001", "dev_id": "BBFA39A7",
+                 "origin_devs": [{"dev_id": "od-7788", "dev_type": "ADAPTER"}], "changed_at_ms": 1763284600000}
+        with post({**asset, "change": event}, "/api/source") as reply:
+            window = json.load(reply)
+        self.assertEqual(window, {"count": 1, "cursor": "3", "now_cursor": "4"})
+        bounds = {"cursor": window["cursor"], "until_cursor": window["now_cursor"]}
+        tenants = self.stub.ListChangedTenants(pb.ListChangedTenantsReq(**bounds)).tenants
+        ids = [t.tenant_id for t in tenants]
+        self.assertEqual(ids, ["t1"])
+        change, = self.stub.ListAssetChanges(pb.ListAssetChangesReq(**bounds, tenant_ids=ids)).changes
+        self.assertEqual((change.asset_id, list(change.ips), list(change.attrs)), (1001, [key["ip"]], ["managed_level"]))
+        self.assertEqual((change.changed_at_ms, change.origin_devs[0].dev_id), (1763284600000, "od-7788"))
+        self.assertEqual(list(change.macs), ["00:1a:2b:3c:4d:5e"])
+        self.assertEqual((get_asset(80).managedLevel, get_asset(443).managedLevel), (1, 1))
+        auth = {"method": "AuthQueryByIp", **key, "response": {"user_id": "user-01"}}
+        with post(auth, "/api/source") as reply:
+            self.assertEqual(json.load(reply)["now_cursor"], "4")
+        for method, field, expected in [("AssetQueryByIp", "managedLevel", 1), ("AuthQueryByIp", "user_id", "user-01")]:
+            with client.open(base + f"/api/preview?method={method}&tenant_id=t1&ip=192.168.106.112") as reply:
+                self.assertEqual(json.load(reply)["response"][field], expected)
+        with self.assertRaises(grpc.RpcError) as missing:
+            self.stub.AssetQueryByIp(pb.AssetQueryByIpReq(tenant_id="another", ip=key["ip"]))
+        self.assertEqual(missing.exception.code(), grpc.StatusCode.NOT_FOUND)
+
+    def test_zero_asset_compatibility(self):
+        mock.write_changes(self.db, [{"tenant_id": "t1", "asset_id": 0, "kind": "UPDATE", "spread_sec": 120}])
+        tenant, = self.stub.ListChangedTenants(pb.ListChangedTenantsReq()).tenants
+        event, = self.stub.ListAssetChanges(pb.ListAssetChangesReq()).changes
+        self.assertTrue(tenant.tenant_wide)
+        self.assertEqual((tenant.spread_sec, event.kind, event.asset_id), (120, pb.UPDATE, 0))
 
 
 if __name__ == "__main__":

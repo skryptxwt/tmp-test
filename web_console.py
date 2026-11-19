@@ -15,7 +15,7 @@ FILES = {"/": ("index.html", "text/html"), "/console.css": ("console.css", "text
          "/console.js": ("console.js", "text/javascript")}
 
 
-def make_console(port, stub, target, write_changes, host="127.0.0.1"):
+def make_console(port, stub, target, write_changes, host="127.0.0.1", *, save_source=None):
     class Handler(BaseHTTPRequestHandler):
         def send_body(self, code, content_type, data):
             self.send_response(code)
@@ -62,6 +62,12 @@ def make_console(port, stub, target, write_changes, host="127.0.0.1"):
                 elif method == "assets":
                     req = pb.ListAssetChangesReq(**window, tenant_ids=params.get("tenant_id", []))
                     result = stub.ListAssetChanges(req, timeout=5)
+                elif method in ("AssetQueryByIp", "AuthQueryByIp"):
+                    key = {name: params.get(name, [""])[0] for name in ("ip", "tenant_id")}
+                    if method == "AssetQueryByIp":
+                        result = stub.AssetQueryByIp(pb.AssetQueryByIpReq(**key), timeout=5)
+                    else:
+                        result = stub.AuthQueryByIp(pb.AuthQueryByIpReq(**key), timeout=5)
                 else:
                     raise ValueError("未知的查询接口")
                 self.respond(200, {"target": target, "status": "OK", "response": MessageToDict(
@@ -69,13 +75,16 @@ def make_console(port, stub, target, write_changes, host="127.0.0.1"):
             except ValueError as exc:
                 self.respond(400, {"error": str(exc), "status": "INVALID_ARGUMENT"})
             except grpc.RpcError as exc:
-                self.respond(400 if exc.code() == grpc.StatusCode.INVALID_ARGUMENT else 503,
+                status = {grpc.StatusCode.INVALID_ARGUMENT: 400, grpc.StatusCode.NOT_FOUND: 404}
+                self.respond(status.get(exc.code(), 503),
                              {"error": exc.details(), "status": exc.code().name})
 
         def do_POST(self):
             if not self.local_request():
                 return
-            if self.path != "/api/changes":
+            handlers = {"/api/changes": write_changes, "/api/source": save_source}
+            handler = handlers.get(self.path)
+            if handler is None:
                 self.send_error(404)
                 return
             if self.headers.get_content_type() != "application/json":
@@ -86,7 +95,7 @@ def make_console(port, stub, target, write_changes, host="127.0.0.1"):
                 if not 0 < size <= 1_048_576:
                     self.respond(413, {"error": "请输入 1 MB 以内的 JSON"})
                     return
-                result = write_changes(json.loads(self.rfile.read(size)))
+                result = handler(json.loads(self.rfile.read(size)))
                 self.respond(201, result)
             except (ValueError, RecursionError) as exc:
                 self.respond(400, {"error": str(exc)})

@@ -4,7 +4,7 @@
     "tenant_id": "tenant-a",
     "asset_id": 1001,
     "ips": ["10.0.0.11", "10.0.0.21"],
-    "attrs": ["assetIp", "managedLevel"],
+    "attrs": ["assetIp", "managed_level"],
     "macs": ["AA:BB:CC:DD:EE:01"],
     "dev_id": "dev-01",
     "dev_type": "endpoint",
@@ -22,7 +22,7 @@
   {
     "kind": "TENANT",
     "tenant_id": "tenant-b",
-    "attrs": ["managedLevel"],
+    "attrs": ["managed_level"],
     "spread_sec": 120
   }
 ]

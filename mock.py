@@ -25,6 +25,10 @@ def init_db(db):
             "CREATE TABLE IF NOT EXISTS events "
             "(seq INTEGER PRIMARY KEY AUTOINCREMENT, change BLOB NOT NULL)"
         )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS source_responses "
+            "(method TEXT, tenant TEXT, ip TEXT, response BLOB NOT NULL, PRIMARY KEY(method, tenant, ip))"
+        )
 
 
 def parse_changes(rows):
@@ -42,10 +46,10 @@ def parse_changes(rows):
                 raise ValueError("未知的 kind")
             if change.kind == pb.TENANT and change.asset_id:
                 raise ValueError("TENANT 记录的 asset_id 应为 0")
-            if change.kind != pb.TENANT and not change.asset_id:
-                raise ValueError("资产变更需要非零 asset_id")
-            if change.kind != pb.TENANT and change.spread_sec:
-                raise ValueError("spread_sec 仅适用于 TENANT")
+            if change.kind != pb.TENANT and row.get("asset_id", row.get("assetId")) is None:
+                raise ValueError("需要 asset_id，显式指定 0 表示整租户")
+            if change.asset_id and change.spread_sec:
+                raise ValueError("spread_sec 仅适用于整租户变更")
             if "changed_at_ms" not in row and "changedAtMs" not in row:
                 change.changed_at_ms = time.time_ns() // 1_000_000
             for field in (change.ips, change.attrs, change.endpoint_keys):
@@ -71,6 +75,52 @@ def write_changes(db, rows, keep_last=None):
     return {"count": len(changes), "cursor": str(head - len(changes)), "now_cursor": str(head)}
 
 
+SOURCE_TYPES = {"AssetQueryByIp": pb.AssetQueryByIpResp, "AuthQueryByIp": pb.AuthQueryByIpResp}
+
+
+def save_source(db, data):
+    if not isinstance(data, dict):
+        raise ValueError("需要回源配置对象")
+    method, tenant, ip = (data.get(key) for key in ("method", "tenant_id", "ip"))
+    if not isinstance(method, str) or method not in SOURCE_TYPES:
+        raise ValueError("请选择资产或认证回源接口")
+    if not all(isinstance(key, str) and key.strip() for key in (tenant, ip)):
+        raise ValueError("需要 tenant_id 和 ip")
+    if not isinstance(data.get("response"), dict):
+        raise ValueError("response 应为该接口的响应对象")
+    try:
+        response = json_format.ParseDict(data["response"], SOURCE_TYPES[method]())
+    except json_format.ParseError as exc:
+        raise ValueError(str(exc)) from exc
+    if method == "AssetQueryByIp":
+        if response.tenant_id and response.tenant_id != tenant:
+            raise ValueError("资产响应的 tenant_id 与查询租户不一致")
+        response.tenant_id = tenant
+    changes = []
+    if "change" in data:
+        if not isinstance(data["change"], dict):
+            raise ValueError("change 应为 AssetChange 对象")
+        event = dict(data["change"])
+        if "tenantId" not in event:
+            event.setdefault("tenant_id", tenant)
+        event.setdefault("ips", [ip])
+        if method == "AssetQueryByIp" and "assetId" not in event and event.get("kind") not in ("TENANT", pb.TENANT) and response.aid:
+            event.setdefault("asset_id", response.aid)
+        changes = parse_changes([event])
+        change = pb.AssetChange.FromString(changes[0][0])
+        if change.tenant_id != tenant or (change.asset_id and ip not in change.ips):
+            raise ValueError("通知必须覆盖本次回源配置的租户和 IP")
+        if method == "AssetQueryByIp" and change.asset_id and response.aid and response.aid != change.asset_id:
+            raise ValueError("通知的 asset_id 与回源响应 aid 不一致")
+    with closing(sqlite3.connect(db)) as conn, conn:
+        conn.execute("INSERT INTO source_responses VALUES (?, ?, ?, ?) "
+                     "ON CONFLICT(method, tenant, ip) DO UPDATE SET response=excluded.response",
+                     (method, tenant, ip, response.SerializeToString()))
+        conn.executemany("INSERT INTO events(change) VALUES (?)", changes)
+        head = conn.execute("SELECT COALESCE(MAX(seq), 0) FROM events").fetchone()[0]
+    return {"count": len(changes), "cursor": str(head - len(changes)), "now_cursor": str(head)}
+
+
 def append(db, path, keep_last):
     rows = json.loads(path.read_text(encoding="utf-8-sig"))
     result = write_changes(db, rows, keep_last)
@@ -88,6 +138,20 @@ def parse_cursor(value, default):
 class ChangeService(rpc.IdtProxyServicer):
     def __init__(self, db):
         self.db = db
+
+    def source_response(self, method, req, context):
+        with closing(sqlite3.connect(self.db)) as conn:
+            row = conn.execute("SELECT response FROM source_responses WHERE method=? AND tenant=? AND ip=?",
+                               (method, req.tenant_id, req.ip)).fetchone()
+        if row is None:
+            context.abort(grpc.StatusCode.NOT_FOUND, "该租户和 IP 尚未配置此接口的回源数据")
+        return SOURCE_TYPES[method].FromString(row[0])
+
+    def AssetQueryByIp(self, request, context):
+        return self.source_response("AssetQueryByIp", request, context)
+
+    def AuthQueryByIp(self, request, context):
+        return self.source_response("AuthQueryByIp", request, context)
 
     def page(self, req, context, *, summary):
         resp = pb.ListChangedTenantsResp() if summary else pb.ListAssetChangesResp()
@@ -126,7 +190,7 @@ class ChangeService(rpc.IdtProxyServicer):
                     tenant = tenants[change.tenant_id]
                     attrs_by_tenant[change.tenant_id].update(change.attrs)
                     tenant.changed_at_ms = change.changed_at_ms
-                    if change.kind == pb.TENANT:
+                    if change.kind == pb.TENANT or change.asset_id == 0:
                         tenant.tenant_wide = True
                         tenant.spread_sec = change.spread_sec
                 elif not tenant_filter or change.tenant_id in tenant_filter:
@@ -182,7 +246,8 @@ def main():
             target = f"{host}:{grpc_port}"
             with grpc.insecure_channel(target, options=[("grpc.enable_http_proxy", 0)]) as channel:
                 with make_console(args.web_port, rpc.IdtProxyStub(channel), target,
-                                  lambda rows: write_changes(args.db, rows), args.web_host) as http:
+                                  lambda rows: write_changes(args.db, rows), args.web_host,
+                                  save_source=lambda data: save_source(args.db, data)) as http:
                     print(f"浏览器配置页 http://{args.web_host}:{http.server_port}/", flush=True)
                     http.serve_forever()
         else:

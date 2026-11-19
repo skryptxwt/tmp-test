@@ -40,13 +40,13 @@ el("example").onclick = () => {
   if (batchMode) {
     el("rows").value = JSON.stringify([
       {tenant_id: "tenant-a", kind: "UPDATE", asset_id: 1001, attrs: ["assetIp"], ips: ["10.0.0.11"]},
-      {tenant_id: "tenant-b", kind: "TENANT", attrs: ["managedLevel"], spread_sec: 120}
+      {tenant_id: "tenant-b", kind: "TENANT", attrs: ["managed_level"], spread_sec: 120}
     ], null, 2);
   } else {
     el("form").reset();
     el("tenant").value = "tenant-a";
     el("asset").value = "1001";
-    el("attrs").value = "assetIp, managedLevel";
+    el("attrs").value = "managed_level";
     el("ips").value = "10.0.0.11, 10.0.0.21";
     showFields();
   }
@@ -60,6 +60,7 @@ function formChange() {
     event.asset_id = Number(value("asset"));
     event.ips = values("ips");
     event.macs = values("macs");
+    if (value("origin-devs")) event.origin_devs = JSON.parse(value("origin-devs"));
     event.endpoint_keys = value("endpoint_keys").split(/\r?\n/).filter(Boolean);
     for (const id of ["dev_id", "dev_type", "agent_id"]) event[id] = value(id);
   }
@@ -145,6 +146,51 @@ el("form").onsubmit = async event => {
     setFeedback(err.message, true);
   } finally {
     el("submit").disabled = false;
+  }
+};
+const sourceDrafts = {AssetQueryByIp: el("source-response").value, AuthQueryByIp: '{"user_id":"user-01","user_name":"test-user"}'};
+let sourceMethod = value("source-method");
+el("source-method").onchange = () => {
+  sourceDrafts[sourceMethod] = el("source-response").value;
+  sourceMethod = value("source-method");
+  el("source-response").value = sourceDrafts[sourceMethod];
+  el("source-output").hidden = true;
+  el("source-feedback").textContent = "";
+};
+el("source-form").onsubmit = async event => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const action = event.submitter?.value || "read";
+  const key = {method: sourceMethod, tenant_id: value("source-tenant"), ip: value("source-ip")};
+  if (form.ariaBusy === "true") return;
+  form.ariaBusy = "true";
+  const controls = [...form.elements];
+  controls.forEach(control => control.disabled = true);
+  el("source-output").hidden = true;
+  let message = "";
+  try {
+    if (action !== "read") {
+      const payload = {...key, response: JSON.parse(value("source-response"))};
+      if (action === "notify") payload.change = JSON.parse(value("source-event"));
+      const saved = await api("/api/source", {method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload)});
+      message = action === "notify" ? `回源值及通知已保存，游标 ${saved.now_cursor}。` : "回源值已保存。";
+      if (action === "notify") {
+        el("cursor").value = saved.cursor;
+        el("until").value = saved.now_cursor;
+        el("tenant-filter").value = "";
+        await preview();
+      }
+    }
+    const result = await api("/api/preview?" + new URLSearchParams(key));
+    el("source-output").textContent = JSON.stringify(result.response, null, 2);
+    el("source-output").hidden = false;
+    el("source-feedback").textContent = message + key.method + " · OK";
+  } catch (err) {
+    el("source-feedback").textContent = message + err.message;
+  } finally {
+    controls.forEach(control => control.disabled = false);
+    form.ariaBusy = "false";
   }
 };
 showFields();
