@@ -3,6 +3,7 @@ name: Build and publish Docker image
 on:
   push:
     branches: [main]
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
   workflow_dispatch:
 
 permissions:
@@ -14,6 +15,7 @@ concurrency:
 
 jobs:
   docker:
+    if: github.ref_type == 'branch'
     runs-on: ubuntu-latest
     env:
       IMAGE: lengdanlexin/tmp-test
@@ -87,3 +89,21 @@ jobs:
       - name: Report build-only run
         if: env.PUBLISH != 'true'
         run: echo "Image built and tested. To publish, configure DOCKERHUB_TOKEN and run this workflow on main." >> "$GITHUB_STEP_SUMMARY"
+
+  release:
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/login-action@v3
+        with:
+          username: lengdanlexin
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Tag the tested commit image on Docker Hub
+        env:
+          IMAGE: lengdanlexin/tmp-test
+        run: |
+          set -euo pipefail
+          commit=$(git rev-parse HEAD)
+          docker buildx imagetools create --prefer-index=false \
+            --tag "$IMAGE:$GITHUB_REF_NAME" "$IMAGE:$commit"

@@ -51,6 +51,8 @@ post /api/rpc/AuthQueryByIp '{"tenant_id":"t1","ip":"192.168.106.112"}'
 
 GitHub Actions 在推送到 `main` 时自动构建 Linux amd64 镜像，并在容器内运行集成测试和启动检查。镜像名为 `lengdanlexin/tmp-test`。
 
+固定版本使用 `v主版本.次版本.补丁版本` 标签。先等待 `main` 对应提交的镜像发布成功，再给该提交打 Git 标签并推送。标签工作流会将同一镜像发布为 `lengdanlexin/tmp-test:<Git 标签>`，便于按版本拉取和核对摘要。
+
 在 GitHub 仓库的 **Settings → Secrets and variables → Actions → New repository secret** 添加 `DOCKERHUB_TOKEN`，值为 Docker Hub 账号 `lengdanlexin` 的可写访问令牌。配置前工作流仍会构建和测试；配置后在 **Actions → Build and publish Docker image → Run workflow** 选择 `main` 运行，或推送新提交。发布标签为 `latest` 和完整 Git 提交 SHA。
 
 发布后可以这样启动镜像，使用命名卷保存变更日志。
