@@ -2,6 +2,7 @@ import argparse
 from concurrent import futures
 from contextlib import closing
 import json
+import os
 from pathlib import Path
 import sqlite3
 import time
@@ -219,6 +220,14 @@ def main():
     serve.add_argument("--listen", default="127.0.0.1:50051")
     serve.add_argument("--web-port", type=int, default=8765, help="本机配置页端口，0 表示关闭")
     serve.add_argument("--web-host", default="127.0.0.1", help="配置页监听地址")
+    serve.add_argument("--tls-cert", type=Path, default=os.getenv("IDT_TLS_CERT"),
+                       help="gRPC 服务端 PEM 证书链，配合 --tls-key 启用单向 TLS")
+    serve.add_argument("--tls-key", type=Path, default=os.getenv("IDT_TLS_KEY"),
+                       help="gRPC 服务端 PEM 私钥")
+    serve.add_argument("--web-grpc-ca", type=Path, default=os.getenv("IDT_WEB_GRPC_CA"),
+                       help="配置页调用 gRPC 时信任的 CA，默认使用提供的证书链")
+    serve.add_argument("--web-grpc-name", default=os.getenv("IDT_WEB_GRPC_NAME"),
+                       help="配置页访问本机 gRPC 时校验的服务端证书名称")
     add = commands.add_parser("append")
     add.add_argument("file", type=Path)
     add.add_argument("--keep-last", type=int, help="本次写入后只保留最新 N 条，用于测试 gap")
@@ -236,15 +245,38 @@ def main():
     rpc.add_IdtProxyServicer_to_server(ChangeService(args.db), server)
     if not 0 <= args.web_port <= 65535:
         parser.error("--web-port 需要 0 至 65535 的整数")
-    grpc_port = server.add_insecure_port(args.listen)
+    if bool(args.tls_cert) != bool(args.tls_key):
+        parser.error("--tls-cert 和 --tls-key 必须同时提供")
+    if (args.web_grpc_ca or args.web_grpc_name) and not args.tls_cert:
+        parser.error("配置页 gRPC TLS 选项需要同时配置服务端证书和私钥")
+    if args.tls_cert:
+        try:
+            cert = args.tls_cert.read_bytes()
+            key = args.tls_key.read_bytes()
+            if args.web_port:
+                roots = args.web_grpc_ca.read_bytes() if args.web_grpc_ca else cert
+        except OSError as exc:
+            parser.exit(1, f"无法读取 TLS 文件：{exc}\n")
+        credentials = grpc.ssl_server_credentials(((key, cert),), require_client_auth=False)
+        grpc_port = server.add_secure_port(args.listen, credentials)
+    else:
+        grpc_port = server.add_insecure_port(args.listen)
     server.start()
-    print(f"IdtProxy 监听 {args.listen}，数据库 {Path(args.db).resolve()}", flush=True)
+    mode = "单向 TLS" if args.tls_cert else "明文"
+    print(f"IdtProxy 监听 {args.listen}（{mode}），数据库 {Path(args.db).resolve()}", flush=True)
     try:
         if args.web_port:
             host = args.listen.rsplit(":", 1)[0]
             host = {"0.0.0.0": "127.0.0.1", "[::]": "[::1]", "": "127.0.0.1"}.get(host, host)
             target = f"{host}:{grpc_port}"
-            with grpc.insecure_channel(target, options=[("grpc.enable_http_proxy", 0)]) as channel:
+            options = [("grpc.enable_http_proxy", 0)]
+            if args.tls_cert:
+                if args.web_grpc_name:
+                    options.append(("grpc.ssl_target_name_override", args.web_grpc_name))
+                channel = grpc.secure_channel(target, grpc.ssl_channel_credentials(roots), options=options)
+            else:
+                channel = grpc.insecure_channel(target, options=options)
+            with channel:
                 with make_console(args.web_port, rpc.IdtProxyStub(channel), target,
                                   lambda rows: write_changes(args.db, rows), args.web_host,
                                   save_source=lambda data: save_source(args.db, data)) as http:

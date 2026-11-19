@@ -35,6 +35,33 @@ jobs:
           curl -fsS -H 'Content-Type: application/json' --data-binary @changes.example.json "$base/api/changes" | jq -e '.count == 3'
           curl -fsS "$base/api/preview?method=tenants" | jq -e '.response.tenants | length == 2'
           curl -fsS "$base/api/preview?method=assets&tenant_id=tenant-a&limit=1" | jq -e '.response.changes[0].asset_id == 1001 and .response.has_more'
+      - name: Test one-way TLS without a client certificate
+        shell: bash
+        run: |
+          set -euo pipefail
+          tls_dir=$(mktemp -d)
+          trap 'docker logs mock-tls || true; docker rm -f mock-tls || true; rm -f "$tls_dir/server.key" "$tls_dir/server.crt"; rmdir "$tls_dir"' EXIT
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=idt-proxy \
+            -addext subjectAltName=DNS:idt-proxy -keyout "$tls_dir/server.key" -out "$tls_dir/server.crt"
+          sudo chgrp 10001 "$tls_dir" "$tls_dir/server.key"
+          chmod 750 "$tls_dir"
+          chmod 640 "$tls_dir/server.key"
+          docker run -d --name mock-tls -p 127.0.0.1:8765:8765 -v "$tls_dir:/tls:ro" \
+            -e IDT_TLS_CERT=/tls/server.crt -e IDT_TLS_KEY=/tls/server.key -e IDT_WEB_GRPC_NAME=idt-proxy "$IMAGE:$GITHUB_SHA"
+          curl -fsS --retry 15 --retry-all-errors --retry-delay 1 --max-time 6 \
+            -H 'Content-Type: application/json' -d '{}' http://127.0.0.1:8765/api/rpc/ListChangedTenants | jq -e '.status == "OK"'
+          docker exec mock-tls python -c '
+          import grpc, idt_proxy_pb2 as pb, idt_proxy_pb2_grpc as rpc
+          roots = open("/tls/server.crt", "rb").read()
+          with grpc.secure_channel("127.0.0.1:50051", grpc.ssl_channel_credentials(roots), options=[("grpc.ssl_target_name_override", "idt-proxy")]) as ch:
+              assert rpc.IdtProxyStub(ch).ListAssetChanges(pb.ListAssetChangesReq(), timeout=5).now_cursor == "0"
+          with grpc.insecure_channel("127.0.0.1:50051") as ch:
+              try:
+                  rpc.IdtProxyStub(ch).ListAssetChanges(pb.ListAssetChangesReq(), timeout=3)
+              except grpc.RpcError as exc:
+                  assert exc.code() == grpc.StatusCode.UNAVAILABLE
+              else:
+                  raise AssertionError("TLS port accepted plaintext")'
       - name: Log in to Docker Hub
         if: env.PUBLISH == 'true'
         uses: docker/login-action@v3

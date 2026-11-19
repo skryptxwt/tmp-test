@@ -61,6 +61,39 @@ docker run -d --name idt-proxy-mock -p 127.0.0.1:8765:8765 -p 127.0.0.1:50051:50
 
 打开 [配置与接口测试页](http://127.0.0.1:8765/)，gRPC 客户端连接 `127.0.0.1:50051`。
 
+### 物理机网络下启用单向 TLS
+
+给容器提供 PEM 格式的**服务端证书链和私钥**，原 gRPC 端口 `50051` 就会改用 TLS。客户端只需建立 TLS 连接，mock 不请求客户端证书。未设置 TLS 文件的实例沿用明文配置。配置页和后台 HTTP API 使用 `http://物理机IP:8765`，页面在服务端通过 TLS 调用 gRPC。
+
+下面使用自签证书启动一个 Linux 测试实例。将 `HOST_IP` 改为客户端实际连接的物理机地址，在独立目录中执行一次生成命令；已有证书时直接挂载已有文件。
+
+```sh
+HOST_IP=192.0.2.10
+mkdir -p tls
+openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+  -subj '/CN=idt-proxy' -addext "subjectAltName=DNS:idt-proxy,IP:127.0.0.1,IP:$HOST_IP" \
+  -keyout tls/server.key -out tls/server.crt
+sudo chgrp 10001 tls/server.key
+chmod 640 tls/server.key
+docker run -d --name idt-proxy-tls --pull always --network host --restart unless-stopped \
+  -v idt-proxy-data:/data -v "$PWD/tls:/tls:ro" \
+  -e IDT_TLS_CERT=/tls/server.crt -e IDT_TLS_KEY=/tls/server.key \
+  lengdanlexin/tmp-test:latest
+```
+
+启动前请确认 `50051` 和 `8765` 可用；旧 mock 正在占用这两个端口时，先停止旧实例。挂载目录须允许容器 UID/GID `10001:10001` 遍历并读取证书和私钥。
+
+在包含 `idt_proxy.proto` 的目录中调用。下例只向客户端提供用于验证服务端的证书：
+
+```sh
+grpcurl -cacert tls/server.crt -import-path . -proto idt_proxy.proto -d '{}' \
+  "$HOST_IP:50051" IdtProxy/ListChangedTenants
+```
+
+若联调客户端也要跳过服务端证书校验，grpcurl 可将 `-cacert tls/server.crt` 换为 `-insecure`，请求仍使用 TLS。外部客户端的校验方式由各自的客户端配置决定。
+
+使用内部 CA 时，服务端证书文件按叶证书、中间证书顺序拼接。另挂载 CA 根证书并设置 `IDT_WEB_GRPC_CA=/tls/ca.crt`，供网页后台验证 gRPC 服务。如果证书仅包含业务域名，可设置 `IDT_WEB_GRPC_NAME=证书中的域名`，网页后台仍通过本机地址连接。直接运行 Python 时，对应参数是 `serve --tls-cert ... --tls-key ...`、`--web-grpc-ca` 和 `--web-grpc-name`。
+
 ## 本地启动与追加变更
 
 在本目录打开 PowerShell，安装依赖并启动服务。默认使用明文 gRPC，监听 `127.0.0.1:50051`。
