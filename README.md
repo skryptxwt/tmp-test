@@ -63,7 +63,16 @@ docker run -d --name idt-proxy-mock -p 127.0.0.1:8765:8765 -p 127.0.0.1:50051:50
 
 ### 物理机网络下启用单向 TLS
 
-给容器提供 PEM 格式的**服务端证书链和私钥**，原 gRPC 端口 `50051` 就会改用 TLS。客户端只需建立 TLS 连接，mock 不请求客户端证书。未设置 TLS 文件的实例沿用明文配置。配置页和后台 HTTP API 使用 `http://物理机IP:8765`，页面在服务端通过 TLS 调用 gRPC。
+联调时设置 `IDT_TLS_AUTO=1`，mock 会在启动时生成自签证书和私钥，仅保存在进程内存中。先确认旧实例已释放 50051 和 8765，再在 Linux 物理机执行：
+
+```sh
+docker run -d --name idt-proxy-auto --pull always --network host --restart unless-stopped \
+  -e IDT_TLS_AUTO=1 -v idt-proxy-data:/data lengdanlexin/tmp-test:latest
+```
+
+gRPC 客户端连接 `物理机IP:50051` 即可使用单向 TLS。该模式不要求客户端证书。服务端证书随进程重启而更新，外部联调客户端可使用跳过服务端证书验证的 TLS 模式，例如在 proto 文件所在目录运行 `grpcurl -insecure -import-path . -proto idt_proxy.proto -d '{}' 物理机IP:50051 IdtProxy/ListChangedTenants`。网页后台自动信任本次生成的证书。Python 直接启动可用 `python mock.py serve --tls-auto`。
+
+需要稳定的证书身份时，给容器提供 PEM 格式的**服务端证书链和私钥**。手动和自动模式共用 gRPC 端口 `50051`；未启用任一模式时使用明文。配置页和后台 HTTP API 使用 `http://物理机IP:8765`。
 
 下面使用自签证书启动一个 Linux 测试实例。将 `HOST_IP` 改为客户端实际连接的物理机地址，在独立目录中执行一次生成命令；已有证书时直接挂载已有文件。
 

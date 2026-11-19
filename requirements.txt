@@ -1,1 +1,2 @@
 grpcio-tools==1.78.0
+cryptography>=44
