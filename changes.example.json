@@ -1,0 +1,28 @@
+[
+  {
+    "kind": "UPDATE",
+    "tenant_id": "tenant-a",
+    "asset_id": 1001,
+    "ips": ["10.0.0.11", "10.0.0.21"],
+    "attrs": ["assetIp", "managedLevel"],
+    "macs": ["AA:BB:CC:DD:EE:01"],
+    "dev_id": "dev-01",
+    "dev_type": "endpoint",
+    "agent_id": "agent-01",
+    "endpoint_keys": ["endpoint-key-01"],
+    "origin_devs": [{"dev_id": "source-01", "dev_type": "sensor"}]
+  },
+  {
+    "kind": "INSERT",
+    "tenant_id": "tenant-a",
+    "asset_id": 1002,
+    "ips": ["10.0.0.12"],
+    "attrs": ["assetIp"]
+  },
+  {
+    "kind": "TENANT",
+    "tenant_id": "tenant-b",
+    "attrs": ["managedLevel"],
+    "spread_sec": 120
+  }
+]

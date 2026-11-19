@@ -1,0 +1,217 @@
+// identifier_proxy grpc接口定义
+// python 生成代码命令: python3.12 -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. idt_proxy.proto
+// go 生成代码命令: export PATH="$PATH:$(go env GOPATH)/bin" && protoc --go_out=pkg/idt_proxy --go-grpc_out=pkg/idt_proxy pkg/idt_proxy/proto/idt_proxy.proto
+
+syntax = "proto3";
+option go_package = "./idt_proxy";
+
+message OrgDeviceInfo {
+  string type = 1;
+  string id = 2;
+  string version = 3;
+}
+
+message Location {
+  // 国家
+  string country = 1;
+  // 省
+  string state = 2;
+  // 市
+  string city = 3;
+}
+
+message AssetQueryByIpReq {
+  string tenant_id = 1;
+  string ip = 2;
+  string mac = 3;
+  string dev_id = 4;
+  string dev_type = 5;
+  string agent_id = 6;
+  repeated OrgDeviceInfo originalDeviceInfos = 7;
+  repeated uint32 vxlan_ids = 8;
+  string host = 9;
+   // 是否需要资产分析
+  bool needAssetAnalyze = 10;
+  // 端口：可选
+  uint32 port = 11;
+  // 域名：可选
+  string domain = 12;
+}
+
+message AssetQueryByIpResp {
+  uint32 bid = 1;
+  uint32 classify_id = 2;
+  uint32 aid = 3;
+  string tenant_id = 4;
+  //标识内外网
+  bool isInternet = 5;
+  //资产域ID
+  string regionId = 6;
+  // ip类型
+  IpType ipType = 7;
+  // 地理位置
+  Location location = 8;
+  // 是否是代理ip
+  bool isProxyIp = 9;
+  // host是否暴露
+  bool isHostExposed = 10;
+  // 特殊资产标签
+  repeated uint32 assetAnalyzeResult = 11;
+  // 资产分析结果状态
+  uint32 assetAnalyzeResultStatus = 12;
+  // 资产本身的业务系统ID列表
+  repeated uint32 assetGroupIds = 13;
+  // 映射查询到的业务系统ID
+  uint32 mapGroupId = 14;
+  // 映射标识: -1:无映射、 0：无映射但关联的业务系统存在映射、1：IP+端口、2:域名
+  int32 mapGroupFlag = 15;
+  // 映射信息来源：域名/ip+端口
+  string mapGroupReference = 16;
+  // 映射查询到的业务系统对外发布类型：-1：未知、0：内网、1：外网
+  int32 mapGroupType = 17;
+  // 资产内网IP（EIP场景下为绑定的内网IP）
+  string assetIp = 18;
+  // 资产重要性
+  uint32 assetMagnitude = 19;
+  // 托管状态
+  uint32 managedLevel = 20;
+}
+
+enum IpType {
+  MANAGEIP = 0; // 管理范围ip
+  EXCLUDEDIP = 1; // 资产排除列表ip
+  UNITIP = 2; // 互联单位ip
+  UNMANAGEIP = 3; // 非管理ip
+}
+
+message AuthQueryByIpReq {
+  string tenant_id = 1;
+  string ip = 2;
+  string dev_type = 3;
+  string dev_id = 4;
+}
+
+message UserDevice {
+  string dev_type = 1;
+  string dev_id = 2;
+  uint32 product_type_id = 3;
+}
+
+message AuthQueryByIpResp {
+  string user_id = 1;
+  string user_name = 2;
+  string user_group = 3;
+  string user_group_id = 4;
+  string user_domain = 5;
+  repeated UserDevice user_devices = 6;
+  string src_ip = 7;
+}
+
+
+// 获取优先级配置响应（用于批量查询）
+message GetPriorityConfigResp {
+  repeated ProxyDataItem data = 1;  // 数据列表
+  bool success = 2;                 // 是否成功
+  string message = 3;               // 错误信息
+}
+
+// 优先级信息（proxy 层定义）
+message ProxyPriorityInfo {
+  string name = 1;  // 优先级名称，如 "CF-Connecting-IP"
+  string type = 2;  // 优先级类型，如 "custom"
+}
+
+// 数据项信息（proxy 层定义）
+message ProxyDataItem {
+  repeated ProxyPriorityInfo priority = 1;  // 优先级列表
+  string type = 2;                           // 类型，如 "global"
+}
+
+// 批量获取优先级配置请求
+message BatchGetPriorityConfigReq {
+  repeated string tenant_ids = 1;  // 租户ID列表
+}
+
+// 批量获取优先级配置响应
+message BatchGetPriorityConfigResp {
+  map<string, GetPriorityConfigResp> configs = 1;  // 租户ID -> 配置响应
+  map<string, string> errors = 2;  // 租户ID -> 错误信息
+}
+
+// 这段时间内哪些租户的资产属性变了。"这段时间"是序号区间 (cursor, until_cursor]，不是墙上时间
+message ListChangedTenantsReq {
+  string cursor = 1;        // 起点，不含；首次或本地无状态时传空
+  string until_cursor = 2;  // 终点，含；传上一轮的 now_cursor
+  uint32 limit = 3;         // 租户项数；0 取默认值，超过上限按上限
+}
+
+message ChangedTenant {
+  string tenant_id = 1;       // 与 AssetQueryByIpReq.tenant_id 同一个值
+  repeated string attrs = 2;  // 窗口内变过的属性名并集
+  bool tenant_wide = 3;       // 窗口内有整租户记录：调用方按整租户分摊过期，不必拉明细
+  int64 changed_at_ms = 4;    // 窗口内最新一条记录的变更时间
+  uint32 spread_sec = 5;      // tenant_wide 时的分摊窗口秒数；0 用默认值
+}
+
+message ListChangedTenantsResp {
+  string now_cursor = 1;   // 请求时的最新序号，调用方留作下一轮的 until_cursor
+  string next_cursor = 2;  // 本次扫到哪里；has_more 为假时等于 until_cursor
+  bool has_more = 3;       // 可能还有：租户数到 limit 或扫描条数到上限就为真，下一页也可能是空页
+  bool gap = 4;            // 变更日志里已经没有调用方需要的记录：调用方把全部缓存分摊过期，游标换成 now_cursor
+  repeated ChangedTenant tenants = 5;
+}
+
+// 区间内的变更记录，每条就是一次可执行的失效动作。记录不带新值
+message ListAssetChangesReq {
+  string cursor = 1;               // 起点，不含
+  string until_cursor = 2;         // 终点，含；传上一轮的 now_cursor
+  uint32 limit = 3;                // 保留下来的记录数；0 取默认值，超过上限按上限
+  repeated string tenant_ids = 4;  // 只要这些租户的记录；空表示不过滤
+}
+
+enum AssetChangeKind {
+  UPDATE = 0;
+  INSERT = 1;
+  DELETE = 2;
+  TENANT = 3;
+}
+
+message AssetChange {
+  AssetChangeKind kind = 1;
+  string tenant_id = 2;
+  uint32 asset_id = 3;        // TENANT 时为 0
+  repeated string ips = 4;    // 变化前后 IP 与 EIP 的并集
+  repeated string attrs = 5;  // 有差异的属性名
+  int64 changed_at_ms = 6;    // go-idt 本地时钟，只用于读时比较
+  uint32 spread_sec = 7;      // TENANT 记录：分摊窗口秒数；0 用默认值
+  repeated string macs = 8;   // 变化前后匹配 MAC 的并集，小写、升序去重
+  repeated string endpoint_keys = 9; // 实际后端 IDT 端索引，不透明文本
+  // 端资产的匹配身份，供消费方按 (agentID, devID, devType) 打失效标记；
+  // 网资产为空，非 agent 类设备可能缺 agent_id。
+  string dev_id = 10;
+  string dev_type = 11;
+  string agent_id = 12;
+  // 适配器上的原始设备（OriginalDevice 的 Sid/Type），去重后按 (id, type) 升序。
+  repeated OriginalDeviceRef origin_devs = 13;
+}
+
+message OriginalDeviceRef {
+  string dev_id = 1;
+  string dev_type = 2;
+}
+
+message ListAssetChangesResp {
+  string now_cursor = 1;
+  string next_cursor = 2;  // has_more 为假时等于 until_cursor
+  bool has_more = 3;       // 可能还有：保留条数到 limit 或扫描条数到上限就为真，下一页也可能是空页
+  bool gap = 4;
+  repeated AssetChange changes = 5;  // 分片内按序号升序
+}
+
+service IdtProxy{
+  rpc AssetQueryByIp(AssetQueryByIpReq) returns (AssetQueryByIpResp);
+  rpc AuthQueryByIp(AuthQueryByIpReq) returns (AuthQueryByIpResp);
+  rpc BatchGetPriorityConfig(BatchGetPriorityConfigReq) returns (BatchGetPriorityConfigResp);
+  rpc ListChangedTenants(ListChangedTenantsReq) returns (ListChangedTenantsResp);
+  rpc ListAssetChanges(ListAssetChangesReq) returns (ListAssetChangesResp);
+}

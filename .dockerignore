@@ -1,0 +1,9 @@
+*
+!requirements.txt
+!mock.py
+!web_console.py
+!idt_proxy_pb2*.py
+!idt_proxy.proto
+!changes.example.json
+!web/
+!web/**

@@ -1,0 +1,51 @@
+name: Build and publish Docker image
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: lengdanlexin/tmp-test
+      PUBLISH: ${{ secrets.DOCKERHUB_TOKEN != '' && github.ref == 'refs/heads/main' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker image
+        run: docker build --tag "$IMAGE:$GITHUB_SHA" .
+      - name: Run integration tests inside the image
+        run: docker run --rm -v "$PWD/test_mock.py:/app/test_mock.py:ro" --entrypoint python "$IMAGE:$GITHUB_SHA" -m unittest -v test_mock
+      - name: Test the running container
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name mock -p 127.0.0.1:8765:8765 -p 127.0.0.1:50051:50051 "$IMAGE:$GITHUB_SHA"
+          trap 'docker logs mock; docker rm -f mock' EXIT
+          curl -fsS --retry 10 --retry-connrefused --retry-delay 1 http://localhost:8765/ >/dev/null
+          curl -fsS -H 'Content-Type: application/json' --data-binary @changes.example.json http://localhost:8765/api/changes | jq -e '.count == 3'
+          curl -fsS 'http://localhost:8765/api/preview?method=tenants' | jq -e '.response.tenants | length == 2'
+          curl -fsS 'http://localhost:8765/api/preview?method=assets&tenant_id=tenant-a&limit=1' | jq -e '.response.changes[0].asset_id == 1001 and .response.has_more'
+      - name: Log in to Docker Hub
+        if: env.PUBLISH == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: lengdanlexin
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Publish tested image
+        if: env.PUBLISH == 'true'
+        run: |
+          docker push "$IMAGE:$GITHUB_SHA"
+          docker tag "$IMAGE:$GITHUB_SHA" "$IMAGE:latest"
+          docker push "$IMAGE:latest"
+      - name: Report build-only run
+        if: env.PUBLISH != 'true'
+        run: echo "Image built and tested. To publish, configure DOCKERHUB_TOKEN and run this workflow on main." >> "$GITHUB_STEP_SUMMARY"

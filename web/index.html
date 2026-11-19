@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>资产变更配置 · IdtProxy</title><link rel="stylesheet" href="/console.css">
+  <script src="/console.js" defer></script>
+</head>
+<body>
+  <header><div class="bar"><div class="brand"><i class="logo" aria-hidden="true"><b></b><b></b><b></b></i>IdtProxy <span>Mock 控制台</span></div><code id="target">正在连接 gRPC…</code></div></header>
+  <main>
+    <h1>资产变更配置</h1>
+    <p class="intro">指定发生变化的租户和资产，提交后即可从 gRPC 接口查询。</p>
+    <div class="workspace">
+      <section class="panel">
+        <div class="heading"><h2>配置变更</h2><button class="text-btn" id="example">填入示例</button></div>
+        <div class="switch" aria-label="输入方式"><button type="button" id="single" aria-pressed="true">表单配置</button><button type="button" id="batch" aria-pressed="false">批量 JSON</button></div>
+        <form id="form">
+          <div id="fields" class="fields">
+            <div class="grid"><label>租户 ID<input id="tenant" placeholder="如 tenant-a" required></label>
+            <label>变更类型<select id="kind"><option value="UPDATE">更新 · UPDATE</option><option value="INSERT">新增 · INSERT</option><option value="DELETE">删除 · DELETE</option><option value="TENANT">整租户 · TENANT</option></select></label></div>
+            <label id="asset-field">资产 ID<input id="asset" type="number" min="1" max="4294967295" required placeholder="如 1001"></label>
+            <label id="spread-field" hidden>分摊窗口（秒）<input id="spread" type="number" min="0" max="4294967295" placeholder="0 表示使用默认值"></label>
+            <label>变更属性<input id="attrs" placeholder="assetIp, managedLevel"><small>多个属性用逗号分隔</small></label>
+            <label id="ip-field">关联 IP<input id="ips" placeholder="10.0.0.11, 10.0.0.21"><small>可填写变化前后的 IP 和 EIP</small></label>
+            <details id="extra"><summary>设备标识与匹配信息</summary><div class="fields inset">
+              <label>MAC 地址<input id="macs" placeholder="多个值用逗号分隔"></label>
+              <div class="grid"><label>设备 ID<input id="dev_id"></label><label>设备类型<input id="dev_type"></label></div>
+              <label>Agent ID<input id="agent_id"></label><label>Endpoint Keys<textarea id="endpoint_keys" rows="2" placeholder="每行一个索引"></textarea></label>
+            </div></details>
+          </div>
+          <label id="batch-field" hidden>AssetChange 数组<textarea id="rows" rows="14" spellcheck="false" placeholder='[{"tenant_id":"tenant-a","kind":"UPDATE","asset_id":1001}]'></textarea><small>每个对象对应一条变更，支持全部 proto 字段。</small></label>
+          <div class="actions"><button id="submit" class="primary">提交变更</button><span id="feedback" role="status"></span></div>
+        </form>
+      </section>
+      <section class="panel preview">
+        <div class="heading"><h2>gRPC 接口测试</h2><button class="text-btn" id="refresh">查询最新数据</button></div>
+        <div class="switch" aria-label="查询接口"><button id="assets" aria-pressed="true">资产明细</button><button id="tenants" aria-pressed="false">租户汇总</button></div>
+        <div class="method"><span>RPC</span><code id="method">/IdtProxy/ListAssetChanges</code></div>
+        <details id="filter" open><summary>请求参数</summary><form id="query-form" class="fields inset">
+          <div class="grid"><label>起点游标<input id="cursor" inputmode="numeric" placeholder="0"></label><label>终点游标<input id="until" inputmode="numeric" placeholder="最新"></label></div>
+          <label id="filter-field">租户过滤<input id="tenant-filter" placeholder="多个 ID 用逗号分隔"></label>
+          <label>每页条数（limit）<input id="limit" type="number" min="0" max="4294967295" placeholder="0 使用默认值 100"></label>
+          <button class="secondary" id="query" type="submit">调用接口</button>
+        </form></details>
+        <details><summary>本次请求 JSON</summary><pre id="request-body" class="request-body">{}</pre></details>
+        <div class="terminal"><div class="terminal-head"><span>响应体</span><span>JSON</span></div><pre id="output" tabindex="0" aria-label="gRPC 响应">正在查询…</pre></div>
+        <div class="footer"><span id="page-info" role="status"></span><button id="next" class="text-btn" hidden>下一页</button></div>
+      </section>
+    </div>
+  </main>
+</body>
+</html>
