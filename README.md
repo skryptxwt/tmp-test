@@ -11,6 +11,42 @@
 
 回源按 **接口名、租户、查询 IP 原文** 匹配；同一资产的不同端口和域名共享配置。未配置的键返回 `NOT_FOUND`。选择 `AuthQueryByIp` 可保存相同 IP 的独立认证响应。通知中未填的租户和 IP 从回源键补齐；普通资产通知可从资产响应的 `aid` 补齐 `asset_id`。独立的通知表单也可提交显式 `asset_id=0` 的 UPDATE 以测试整租户兼容分支，明细保留原 kind。
 
+## 后台 HTTP API
+
+网页和脚本使用同一组 JSON 接口。Docker 使用 host 网络时，在物理机本机访问 `http://127.0.0.1:8765`，其他机器用物理机 IP 替换回环地址。所有下列接口都使用 POST 和 `Content-Type: application/json`。
+
+| 路径 | 对应网页操作 | 请求体 |
+|---|---|---|
+| `/api/changes` | 提交单条或批量变更 | `AssetChange` 数组；一条也放进数组 |
+| `/api/source` | 仅保存回源值，或保存并通知 | `method`、`tenant_id`、`ip`、`response`；附上 `change` 则在同一事务中追加通知 |
+| `/api/rpc/ListChangedTenants` | 查询变更租户 | `cursor`、`until_cursor`、`limit`，均可省略 |
+| `/api/rpc/ListAssetChanges` | 查询变更明细 | 相同游标及分页参数，可附加 `tenant_ids` 数组 |
+| `/api/rpc/AssetQueryByIp` | 查询当前资产回源值 | `AssetQueryByIpReq` 对象，按租户和 IP 查找 |
+| `/api/rpc/AuthQueryByIp` | 查询当前认证回源值 | `AuthQueryByIpReq` 对象，按租户和 IP 查找 |
+
+下列示例可直接在运行 mock 的 Linux 物理机上执行。
+
+```sh
+base=http://127.0.0.1:8765
+post() { curl -sS -H 'Content-Type: application/json' --data-binary "$2" "$base$1"; echo; }
+
+# 准备初始值，不追加通知
+post /api/source '{"method":"AssetQueryByIp","tenant_id":"t1","ip":"192.168.106.112","response":{"aid":1001,"managedLevel":0}}'
+# 改为托管并追加一条通知
+post /api/source '{"method":"AssetQueryByIp","tenant_id":"t1","ip":"192.168.106.112","response":{"aid":1001,"managedLevel":1},"change":{"attrs":["managed_level"]}}'
+# 查询当前回源值、变更租户、租户内的资产变更
+post /api/rpc/AssetQueryByIp '{"tenant_id":"t1","ip":"192.168.106.112"}'
+post /api/rpc/ListChangedTenants '{}'
+post /api/rpc/ListAssetChanges '{"tenant_ids":["t1"],"limit":20}'
+# 单独追加整租户通知
+post /api/changes '[{"tenant_id":"t2","kind":"TENANT","attrs":["managed_level"],"spread_sec":120}]'
+# 配置并读取认证响应
+post /api/source '{"method":"AuthQueryByIp","tenant_id":"t1","ip":"192.168.106.112","response":{"user_id":"user-01"}}'
+post /api/rpc/AuthQueryByIp '{"tenant_id":"t1","ip":"192.168.106.112"}'
+```
+
+写入成功返回 HTTP 201 和 `count`、`cursor`、`now_cursor`。要查看刚写入的一批，用返回的 `cursor` 作起点、`now_cursor` 作 `until_cursor`。查询成功返回 HTTP 200，JSON 的 `response` 为实际 gRPC 响应。参数有误返回 400，未配置回源值返回 404。翻页时保留终点和过滤条件，以 `next_cursor` 作下一页起点。
+
 ## Docker 镜像
 
 GitHub Actions 在推送到 `main` 时自动构建 Linux amd64 镜像，并在容器内运行集成测试和启动检查。镜像名为 `lengdanlexin/tmp-test`。

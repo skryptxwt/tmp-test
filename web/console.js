@@ -66,8 +66,9 @@ function formChange() {
   }
   return event;
 }
-async function api(path, options) {
-  const response = await fetch(path, options);
+async function post(path, body) {
+  const response = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body)});
   const data = await response.json();
   if (!response.ok) throw new Error([data.status, data.error || "请求失败"].filter(Boolean).join(" · "));
   return data;
@@ -75,18 +76,15 @@ async function api(path, options) {
 async function preview() {
   const serial = ++requestNumber;
   const request = {cursor: value("cursor"), until_cursor: value("until"), limit: Number(value("limit"))};
-  const params = new URLSearchParams({method, ...request});
-  if (method === "assets") {
-    request.tenant_ids = values("tenant-filter");
-    for (const tenant of request.tenant_ids) params.append("tenant_id", tenant);
-  }
+  const rpc = method === "assets" ? "ListAssetChanges" : "ListChangedTenants";
+  if (method === "assets") request.tenant_ids = values("tenant-filter");
   el("request-body").textContent = JSON.stringify(request, null, 2);
   const started = performance.now();
   lastPage = null;
   el("next").hidden = true;
   el("page-info").textContent = "查询中…";
   try {
-    const {target, response} = await api("/api/preview?" + params);
+    const {target, response} = await post("/api/rpc/" + rpc, request);
     if (serial !== requestNumber) return;
     lastPage = response;
     el("target").textContent = "gRPC · " + target;
@@ -135,8 +133,7 @@ el("form").onsubmit = async event => {
   setFeedback("正在写入…");
   try {
     const rows = batchMode ? JSON.parse(value("rows")) : [formChange()];
-    const result = await api("/api/changes", {method: "POST",
-      headers: {"Content-Type": "application/json"}, body: JSON.stringify(rows)});
+    const result = await post("/api/changes", rows);
     el("cursor").value = result.cursor;
     el("until").value = result.now_cursor;
     el("tenant-filter").value = "";
@@ -172,8 +169,7 @@ el("source-form").onsubmit = async event => {
     if (action !== "read") {
       const payload = {...key, response: JSON.parse(value("source-response"))};
       if (action === "notify") payload.change = JSON.parse(value("source-event"));
-      const saved = await api("/api/source", {method: "POST", headers: {"Content-Type": "application/json"},
-        body: JSON.stringify(payload)});
+      const saved = await post("/api/source", payload);
       message = action === "notify" ? `回源值及通知已保存，游标 ${saved.now_cursor}。` : "回源值已保存。";
       if (action === "notify") {
         el("cursor").value = saved.cursor;
@@ -182,7 +178,7 @@ el("source-form").onsubmit = async event => {
         await preview();
       }
     }
-    const result = await api("/api/preview?" + new URLSearchParams(key));
+    const result = await post("/api/rpc/" + key.method, {tenant_id: key.tenant_id, ip: key.ip});
     el("source-output").textContent = JSON.stringify(result.response, null, 2);
     el("source-output").hidden = false;
     el("source-feedback").textContent = message + key.method + " · OK";

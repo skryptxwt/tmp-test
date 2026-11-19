@@ -5,7 +5,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import grpc
-from google.protobuf.json_format import MessageToDict
+from google.protobuf.json_format import MessageToDict, ParseDict, ParseError
 
 import idt_proxy_pb2 as pb
 
@@ -16,6 +16,13 @@ FILES = {"/": ("index.html", "text/html"), "/console.css": ("console.css", "text
 
 
 def make_console(port, stub, target, write_changes, host="127.0.0.1", *, save_source=None):
+    queries = {
+        "ListChangedTenants": (pb.ListChangedTenantsReq, stub.ListChangedTenants),
+        "ListAssetChanges": (pb.ListAssetChangesReq, stub.ListAssetChanges),
+        "AssetQueryByIp": (pb.AssetQueryByIpReq, stub.AssetQueryByIp),
+        "AuthQueryByIp": (pb.AuthQueryByIpReq, stub.AuthQueryByIp),
+    }
+
     class Handler(BaseHTTPRequestHandler):
         def send_body(self, code, content_type, data):
             self.send_response(code)
@@ -41,6 +48,21 @@ def make_console(port, stub, target, write_changes, host="127.0.0.1", *, save_so
                 return False
             return True
 
+        def query(self, method, data):
+            if not isinstance(data, dict):
+                self.respond(400, {"error": "请求体须为 JSON 对象", "status": "INVALID_ARGUMENT"})
+                return
+            request_type, call = queries[method]
+            try:
+                result = call(ParseDict(data, request_type()), timeout=5)
+                self.respond(200, {"target": target, "status": "OK", "response": MessageToDict(
+                    result, preserving_proto_field_name=True, always_print_fields_with_no_presence=True)})
+            except (ValueError, ParseError) as exc:
+                self.respond(400, {"error": str(exc), "status": "INVALID_ARGUMENT"})
+            except grpc.RpcError as exc:
+                status = {grpc.StatusCode.INVALID_ARGUMENT: 400, grpc.StatusCode.NOT_FOUND: 404}
+                self.respond(status.get(exc.code(), 503), {"error": exc.details(), "status": exc.code().name})
+
         def do_GET(self):
             if not self.local_request():
                 return
@@ -53,39 +75,26 @@ def make_console(port, stub, target, write_changes, host="127.0.0.1", *, save_so
                 self.send_error(404)
                 return
             params = parse_qs(url.query)
-            window = {key: params.get(key, [""])[0] for key in ("cursor", "until_cursor")}
             method = params.get("method", ["assets"])[0]
-            try:
-                window["limit"] = int(params.get("limit", ["0"])[0])
-                if method == "tenants":
-                    result = stub.ListChangedTenants(pb.ListChangedTenantsReq(**window), timeout=5)
-                elif method == "assets":
-                    req = pb.ListAssetChangesReq(**window, tenant_ids=params.get("tenant_id", []))
-                    result = stub.ListAssetChanges(req, timeout=5)
-                elif method in ("AssetQueryByIp", "AuthQueryByIp"):
-                    key = {name: params.get(name, [""])[0] for name in ("ip", "tenant_id")}
-                    if method == "AssetQueryByIp":
-                        result = stub.AssetQueryByIp(pb.AssetQueryByIpReq(**key), timeout=5)
-                    else:
-                        result = stub.AuthQueryByIp(pb.AuthQueryByIpReq(**key), timeout=5)
-                else:
-                    raise ValueError("未知的查询接口")
-                self.respond(200, {"target": target, "status": "OK", "response": MessageToDict(
-                    result, preserving_proto_field_name=True, always_print_fields_with_no_presence=True)})
-            except ValueError as exc:
-                self.respond(400, {"error": str(exc), "status": "INVALID_ARGUMENT"})
-            except grpc.RpcError as exc:
-                status = {grpc.StatusCode.INVALID_ARGUMENT: 400, grpc.StatusCode.NOT_FOUND: 404}
-                self.respond(status.get(exc.code(), 503),
-                             {"error": exc.details(), "status": exc.code().name})
+            if method in ("tenants", "assets"):
+                data = {k: params[k][0] for k in ("cursor", "until_cursor", "limit") if k in params}
+                if method == "assets":
+                    data["tenant_ids"] = params.get("tenant_id", [])
+                self.query("ListAssetChanges" if method == "assets" else "ListChangedTenants", data)
+            elif method in ("AssetQueryByIp", "AuthQueryByIp"):
+                self.query(method, {k: params[k][0] for k in ("ip", "tenant_id") if k in params})
+            else:
+                self.respond(400, {"error": "未知的查询接口", "status": "INVALID_ARGUMENT"})
 
         def do_POST(self):
             if not self.local_request():
                 return
             handlers = {"/api/changes": write_changes, "/api/source": save_source}
-            handler = handlers.get(self.path)
-            if handler is None:
-                self.send_error(404)
+            path = urlsplit(self.path).path
+            handler = handlers.get(path)
+            method = path.removeprefix("/api/rpc/") if path.startswith("/api/rpc/") else None
+            if handler is None and method not in queries:
+                self.respond(404, {"error": "未知接口", "status": "NOT_FOUND"})
                 return
             if self.headers.get_content_type() != "application/json":
                 self.respond(415, {"error": "需要 application/json"})
@@ -95,8 +104,11 @@ def make_console(port, stub, target, write_changes, host="127.0.0.1", *, save_so
                 if not 0 < size <= 1_048_576:
                     self.respond(413, {"error": "请输入 1 MB 以内的 JSON"})
                     return
-                result = handler(json.loads(self.rfile.read(size)))
-                self.respond(201, result)
+                data = json.loads(self.rfile.read(size))
+                if method in queries:
+                    self.query(method, data)
+                else:
+                    self.respond(201, handler(data))
             except (ValueError, RecursionError) as exc:
                 self.respond(400, {"error": str(exc)})
             except sqlite3.Error:

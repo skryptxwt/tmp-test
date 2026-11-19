@@ -160,6 +160,21 @@ class ChangeRpcTest(unittest.TestCase):
         for method, field, expected in [("AssetQueryByIp", "managedLevel", 1), ("AuthQueryByIp", "user_id", "user-01")]:
             with client.open(base + f"/api/preview?method={method}&tenant_id=t1&ip=192.168.106.112") as reply:
                 self.assertEqual(json.load(reply)["response"][field], expected)
+            with post(key, "/api/rpc/" + method) as reply:
+                self.assertEqual(json.load(reply)["response"][field], expected)
+        with post(bounds, "/api/rpc/ListChangedTenants") as reply:
+            self.assertEqual(json.load(reply)["response"]["tenants"][0]["tenant_id"], "t1")
+        with post({**bounds, "tenant_ids": ["t1"], "limit": 1}, "/api/rpc/ListAssetChanges") as reply:
+            page = json.load(reply)["response"]
+            self.assertEqual(page["changes"][0]["asset_id"], 1001)
+            self.assertTrue(page["has_more"])
+        for body in ({"unknown": 1}, [], {"limit": -1}):
+            with self.assertRaises(HTTPError) as invalid_request:
+                post(body, "/api/rpc/ListAssetChanges")
+            self.assertEqual(invalid_request.exception.code, 400)
+        with self.assertRaises(HTTPError) as missing_http:
+            post({"tenant_id": "another", "ip": key["ip"]}, "/api/rpc/AssetQueryByIp")
+        self.assertEqual(json.load(missing_http.exception)["status"], "NOT_FOUND")
         with self.assertRaises(grpc.RpcError) as missing:
             self.stub.AssetQueryByIp(pb.AssetQueryByIpReq(tenant_id="another", ip=key["ip"]))
         self.assertEqual(missing.exception.code(), grpc.StatusCode.NOT_FOUND)
